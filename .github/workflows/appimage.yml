@@ -17,7 +17,7 @@ jobs:
       appbase: ratarmount-manylinux2014_x86_64
       appdir: ratarmount-manylinux2014_x86_64.AppDir
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
 
     - name: Print System Information
       run: |
@@ -119,7 +119,7 @@ jobs:
         ratarmount --help
         ratarmount --version
 
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
 
     - name: Test Simple Mount
       run: |
