@@ -1197,6 +1197,12 @@ seeking capabilities when opening that file.
         help='Specify a file with newline separated passwords for RAR and ZIP files. '
              'The passwords will be tried out in order of appearance in the file.')
 
+
+    advancedGroup.add_argument(
+        '-mt', '--multithreading', action='store_true', default=False,
+        help='Activate FUSE multithreading')
+
+
     # Positional Arguments
 
     positionalGroup.add_argument(
@@ -1511,7 +1517,7 @@ def cli(rawArgs: Optional[List[str]] = None) -> None:
             operations=fuseOperationsObject,
             mountpoint=args.mount_point,
             foreground=args.foreground,
-            nothreads=True,  # Can't access SQLite database connection object from multiple threads
+            nothreads=not args.multithreading,  # Can't access SQLite database connection object from multiple threads
             # fmt: off
             **fusekwargs
         )

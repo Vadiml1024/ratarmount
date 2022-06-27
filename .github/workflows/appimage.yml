@@ -4,7 +4,7 @@ on:
   push:
     branches:
     - master
-    - rrlimit
+    - fuse-mt
 
     tags: 'v*'
   workflow_dispatch:
