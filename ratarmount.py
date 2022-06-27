@@ -105,7 +105,7 @@ class WritableFolderMountSource(fuse.Operations):
     @staticmethod
     def _openSqlDb(path: str, **kwargs) -> sqlite3.Connection:
         # isolation_level None is important so that changes are autocommitted because there is no manual commit call.
-        sqlConnection = sqlite3.connect(path, isolation_level=None, **kwargs)
+        sqlConnection = sqlite3.connect(path, isolation_level=None, check_same_thread=False, **kwargs)
         sqlConnection.row_factory = sqlite3.Row
         sqlConnection.executescript(
             # Locking mode exclusive leads to a measurable speedup. E.g., find on 2k recursive files tar
@@ -1360,7 +1360,7 @@ def cli(rawArgs: Optional[List[str]] = None) -> None:
         databasePath = os.path.join(args.write_overlay, WritableFolderMountSource.hiddenDatabaseName)
         if os.path.exists(databasePath):
             uriPath = urllib.parse.quote(databasePath)
-            sqlConnection = sqlite3.connect(f"file:{uriPath}?mode=ro", uri=True)
+            sqlConnection = sqlite3.connect(f"file:{uriPath}?mode=ro", uri=True, check_same_thread=False)
 
             with open(deletionList, 'at', encoding=args.encoding) as file:
                 for path, name in sqlConnection.execute("SELECT path,name FROM files WHERE deleted == 1;"):

@@ -1066,7 +1066,7 @@ class SQLiteIndexedTar(MountSource):
 
     @staticmethod
     def _openSqlDb(path: AnyStr, **kwargs) -> sqlite3.Connection:
-        sqlConnection = sqlite3.connect(path, **kwargs)
+        sqlConnection = sqlite3.connect(path, check_same_thread=False, **kwargs)
         sqlConnection.row_factory = sqlite3.Row
         sqlConnection.executescript(
             # Locking mode exclusive leads to a measurable speedup. E.g., find on 2k recursive files tar
