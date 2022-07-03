@@ -24,10 +24,17 @@ try:
     import indexed_bzip2
 except ImportError:
     pass
+
 try:
     import indexed_gzip
 except ImportError:
     pass
+
+try:
+    import pragzip
+except ImportError:
+    pass
+
 try:
     import xz
 except ImportError:
@@ -2273,19 +2280,10 @@ class SQLiteIndexedTar(MountSource):
             maxBlobSize = 256 * 1024 * 1024  # 256 MiB
 
             if 'gzipindex' in tables or 'gzipindexes' in tables:
-                table = 'gzipindexes' if 'gzipindexes' in tables else 'gzipindex'
-
                 try:
-                    blobCount = db.execute(f"SELECT COUNT(data) FROM {table}").fetchone()[0]
-                    if blobCount == 0:
-                        raise Exception(
-                            f"{table} table exists but is empty. Last index creation might not have "
-                            "finished or the file is relatively small. In the latter case, rewriting "
-                            "the gzip index should also be cheap"
-                        )
-
                     t0 = time.time()
                     # indexed_gzip 1.5.0 added support for pure Python file objects as arguments for the index!
+                    table = 'gzipindexes' if 'gzipindexes' in tables else 'gzipindex'
                     fileObject.import_index(fileobj=SQLiteBlobsFile(db, table, 'data', buffer_size=maxBlobSize))
 
                     # SQLiteBlobFile is rather slow to get parts of a large blob by using substr.
@@ -2306,6 +2304,9 @@ class SQLiteIndexedTar(MountSource):
                     #   https://www.sqlite.org/c3ref/blob_open.html
                     #   https://bugs.python.org/issue24905
                     print(f"Loading gzip block offsets took {time.time() - t0:.2f}s")
+
+                    if self.parallelization != 1:
+                        self._reloadWithPragzip()
                     return
 
                 except Exception as exception:
@@ -2331,7 +2332,6 @@ class SQLiteIndexedTar(MountSource):
             # Timings when using WriteSQLiteBlobs to write directly into the SQLite database.
             #   Time / s: 13.029 14.884 14.110 14.229 13.807
 
-            db.execute('DROP TABLE IF EXISTS gzipindexes')
             db.execute('CREATE TABLE gzipindexes ( data BLOB )')
 
             try:
@@ -2354,10 +2354,12 @@ class SQLiteIndexedTar(MountSource):
                     print("[Warning] size is smaller than the gzip seek point spacing.")
             elif blobCount == 1:
                 # For downwards compatibility
-                db.execute('DROP TABLE IF EXISTS gzipindex;')
                 db.execute('ALTER TABLE gzipindexes RENAME TO gzipindex;')
 
             db.commit()
+
+            if self.parallelization != 1:
+                self._reloadWithPragzip()
             return
 
         # Note that for xz seeking, loading and storing block indexes is unnecessary because it has an index included!
@@ -2372,3 +2374,41 @@ class SQLiteIndexedTar(MountSource):
     def joinThreads(self):
         if hasattr(self.tarFileObject, 'join_threads'):
             self.tarFileObject.join_threads()
+
+    def _reloadWithPragzip(self):
+        if 'pragzip' not in sys.modules or self.rawFileObject is None or self.compression != 'gz':
+            return
+
+        # Only allow mounting of real files. Pragzip does work with Python file objects but we don't want to
+        # mount recursive archives all with the parallel gzip decoder because then the cores would be oversubscribed!
+        # Similarly, small files would result in being wholly cached into memory, which probably isn't what the user
+        # had intended by using ratarmount?
+        if (
+            not hasattr(self.rawFileObject, 'name')
+            or not self.rawFileObject.name
+            or not os.path.isfile(self.rawFileObject.name)
+            or os.stat(self.rawFileObject.name).st_size < 4 * self.gzipSeekPointSpacing
+        ):
+            print("   Do not reload with pragzip")
+            return
+
+        if self.tarFileObject:
+            self.tarFileObject.close()
+
+        tables = SQLiteIndexedTar._getSqliteTables(self.sqlConnection)
+
+        if 'gzipindex' not in tables and 'gzipindexes' not in tables:
+            return
+
+        if self.printDebug >= 1:
+            print("[Info] Reopening the gzip with the pragzip backend...")
+        self.tarFileObject = pragzip.PragzipFile(self.rawFileObject, parallelization=self.parallelization)
+
+        table = 'gzipindexes' if 'gzipindexes' in tables else 'gzipindex'
+        maxBlobSize = 256 * 1024 * 1024  # 256 MiB
+        self.tarFileObject.set_block_offsets(
+            SQLiteBlobsFile(self.sqlConnection, table, 'data', buffer_size=maxBlobSize)
+        )
+
+        if self.printDebug >= 1:
+            print("[Info] Reopened the gzip with the pragzip backend.")

@@ -907,6 +907,7 @@ class PrintVersionAction(argparse.Action):
 
         for _, cinfo in supportedCompressions.items():
             printModuleVersion(cinfo.moduleName)
+        printModuleVersion('pragzip')
 
         sys.exit(0)
 
