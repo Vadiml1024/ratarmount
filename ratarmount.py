@@ -175,8 +175,10 @@ class WritableFolderMountSource(fuse.Operations):
             self.sqlConnection.execute('DELETE FROM "files" WHERE (path,name) == (?,?)', (folder, name))
 
     def listDeleted(self, path: str) -> List[str]:
-        """Return list of files markes as deleted in the given path."""
-        result = self.sqlConnection.execute('SELECT name FROM "files" WHERE path == (?) AND deleted == 1', (path,))
+        """Return list of files marked as deleted in the given path."""
+        result = self.sqlConnection.execute(
+            'SELECT name FROM "files" WHERE path == (?) AND deleted == 1', (path.rstrip('/'),)
+        )
 
         # For temporary SQLite file suffixes, see https://www.sqlite.org/tempfiles.html
         suffixes = ['', '-journal', '-shm', '-wal']
@@ -343,7 +345,8 @@ class WritableFolderMountSource(fuse.Operations):
         if not self.mountSource.exists(path) or self.isDeleted(path):
             raise fuse.FuseOSError(fuse.errno.ENOENT)
 
-        if set(self.mountSource.listDir(path).keys()) - set(self.listDeleted(path)):
+        contents = self.mountSource.listDir(path)
+        if contents is not None and set(contents.keys()) - set(self.listDeleted(path)):
             raise fuse.FuseOSError(fuse.errno.ENOTEMPTY)
 
         try:
@@ -1388,6 +1391,7 @@ def cli(rawArgs: Optional[List[str]] = None) -> None:
                     # ratarmount does not discern between these two cases.
                     deletionListFile.write(f"{pathRelativeToRoot}\0")
                     deletionListFile.write(f"/{pathRelativeToRoot}\0")
+                    deletionListFile.write(f"./{pathRelativeToRoot}\0")
 
                     appendListFile.write(f"{pathRelativeToRoot}\0")
 
@@ -1507,13 +1511,11 @@ def cli(rawArgs: Optional[List[str]] = None) -> None:
 
     try:
         fuse.FUSE(
-            # fmt: on
             operations=fuseOperationsObject,
             mountpoint=args.mount_point,
             foreground=args.foreground,
             nothreads=True,  # Can't access SQLite database connection object from multiple threads
-            # fmt: off
-            **fusekwargs
+            **fusekwargs,
         )
     except RuntimeError as exception:
         raise RatarmountError(
