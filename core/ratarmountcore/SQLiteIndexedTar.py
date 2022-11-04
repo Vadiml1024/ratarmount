@@ -39,7 +39,15 @@ from .ProgressBar import ProgressBar
 from .SQLiteBlobFile import SQLiteBlobsFile, WriteSQLiteBlobs
 from .StenciledFile import StenciledFile
 from .compressions import getGzipInfo, supportedCompressions
-from .utils import RatarmountError, IndexNotOpenError, InvalidIndexError, CompressionError, overrides, ceilDiv
+from .utils import (
+    RatarmountError,
+    IndexNotOpenError,
+    InvalidIndexError,
+    CompressionError,
+    ceilDiv,
+    findModuleVersion,
+    overrides,
+)
 from .BlockParallelReaders import ParallelXZReader
 
 
@@ -612,7 +620,7 @@ class SQLiteIndexedTar(MountSource):
         indexFilePath                : Optional[str]             = None,
         indexFolders                 : Optional[List[str]]       = None,
         recursive                    : bool                      = False,
-        gzipSeekPointSpacing         : int                       = 4*1024*1024,
+        gzipSeekPointSpacing         : int                       = 4 * 1024 * 1024,
         encoding                     : str                       = tarfile.ENCODING,
         stripRecursiveTarExtension   : bool                      = False,
         ignoreZeros                  : bool                      = False,
@@ -937,9 +945,11 @@ class SQLiteIndexedTar(MountSource):
         try:
             connection.executescript(versionsTable)
         except Exception as exception:
+            print("[Warning] There was an error when adding metadata information. Index loading might not work.")
             if printDebug >= 2:
                 print(exception)
-            print("[Warning] There was an error when adding metadata information. Index loading might not work.")
+            if printDebug >= 3:
+                traceback.print_exc()
 
         try:
 
@@ -962,22 +972,17 @@ class SQLiteIndexedTar(MountSource):
 
             for _, cinfo in supportedCompressions.items():
                 if cinfo.moduleName in sys.modules:
-                    module = sys.modules[cinfo.moduleName]
-                    # zipfile has no __version__ attribute and PEP 396 ensuring that was rejected 2021-04-14
-                    # in favor of 'version' from importlib.metadata which does not even work with zipfile.
-                    # Probably, because zipfile is a built-in module whose version would be the Python version.
-                    # https://www.python.org/dev/peps/pep-0396/
-                    # The "python-xz" project is imported as an "xz" module, which complicates things because
-                    # there is no generic way to get the "python-xz" name from the "xz" runtime module object
-                    # and importlib.metadata.version will require "python-xz" as argument.
-                    if hasattr(module, '__version__'):
-                        versions += [makeVersionRow(cinfo.moduleName, getattr(module, '__version__'))]
+                    moduleVersion = findModuleVersion(sys.modules[cinfo.moduleName])
+                    if moduleVersion:
+                        versions += [makeVersionRow(cinfo.moduleName, moduleVersion)]
 
             connection.executemany('INSERT OR REPLACE INTO "versions" VALUES (?,?,?,?,?)', versions)
         except Exception as exception:
             print("[Warning] There was an error when adding version information.")
-            if printDebug >= 3:
+            if printDebug >= 2:
                 print(exception)
+            if printDebug >= 3:
+                traceback.print_exc()
 
     @staticmethod
     def _storeTarMetadata(connection: sqlite3.Connection, tarPath: AnyStr, printDebug: int = 0) -> None:
@@ -1121,13 +1126,17 @@ class SQLiteIndexedTar(MountSource):
         );"""
 
     @staticmethod
+    def _getSqliteTables(connection: sqlite3.Connection):
+        return [x[0] for x in connection.execute('SELECT name FROM sqlite_master WHERE type="table"')]
+
+    @staticmethod
     def _initializeSqlDb(indexFilePath: Optional[str], printDebug: int = 0) -> sqlite3.Connection:
         if printDebug >= 1:
             print("Creating new SQLite index database at", indexFilePath if indexFilePath else ':memory:')
 
         sqlConnection = SQLiteIndexedTar._openSqlDb(indexFilePath if indexFilePath else ':memory:')
-        tables = sqlConnection.execute('SELECT name FROM sqlite_master WHERE type = "table";')
-        if {"files", "filestmp", "parentfolders"}.intersection({t[0] for t in tables}):
+        tables = SQLiteIndexedTar._getSqliteTables(sqlConnection)
+        if {"files", "filestmp", "parentfolders"}.intersection(tables):
             raise InvalidIndexError(
                 f"The index file {indexFilePath} already seems to contain a table. Please specify --recreate-index."
             )
@@ -1142,7 +1151,8 @@ class SQLiteIndexedTar(MountSource):
         self.sqlConnection.close()
 
         uriPath = urllib.parse.quote(self.indexFilePath)
-        self.sqlConnection = SQLiteIndexedTar._openSqlDb(f"file:{uriPath}?mode=ro", uri=True)
+        # check_same_thread=False can be used because it is read-only anyway and it allows to enable FUSE multithreading
+        self.sqlConnection = SQLiteIndexedTar._openSqlDb(f"file:{uriPath}?mode=ro", uri=True, check_same_thread=False)
 
     def _updateProgressBar(self, progressBar, fileobj: Any) -> None:
         if not progressBar:
@@ -1187,7 +1197,7 @@ class SQLiteIndexedTar(MountSource):
             cleanupTemporaryTables = True
             self.sqlConnection = self._initializeSqlDb(self.indexFilePath, printDebug=self.printDebug)
 
-        tables = [x[0] for x in self.sqlConnection.execute('SELECT name FROM sqlite_master WHERE type="table"')]
+        tables = SQLiteIndexedTar._getSqliteTables(self.sqlConnection)
         if "filestmp" not in tables and "parentfolders" not in tables:
             self.sqlConnection.execute(SQLiteIndexedTar.CREATE_FILESTMP_TABLE)
             self.sqlConnection.execute(SQLiteIndexedTar.CREATE_PARENT_FOLDERS_TABLE)
@@ -1912,7 +1922,7 @@ class SQLiteIndexedTar(MountSource):
             return
 
         self.sqlConnection = self._openSqlDb(indexFilePath)
-        tables = [x[0] for x in self.sqlConnection.execute('SELECT name FROM sqlite_master WHERE type="table"')]
+        tables = SQLiteIndexedTar._getSqliteTables(self.sqlConnection)
         versions = None
         try:
             rows = self.sqlConnection.execute('SELECT * FROM versions;')
@@ -2239,7 +2249,7 @@ class SQLiteIndexedTar(MountSource):
                 if self.printDebug >= 3:
                     traceback.print_exc()
 
-                tables = [x[0] for x in db.execute('SELECT name FROM sqlite_master WHERE type="table";')]
+                tables = SQLiteIndexedTar._getSqliteTables(db)
                 if table_name in tables:
                     db.execute(f"DROP TABLE {table_name}")
                 db.execute(f"CREATE TABLE {table_name} ( blockoffset INTEGER PRIMARY KEY, dataoffset INTEGER )")
@@ -2254,7 +2264,7 @@ class SQLiteIndexedTar(MountSource):
             and self.compression == 'gz'
             # fmt: on
         ):
-            tables = [x[0] for x in db.execute('SELECT name FROM sqlite_master WHERE type="table"')]
+            tables = SQLiteIndexedTar._getSqliteTables(db)
 
             # The maximum blob size configured by SQLite is exactly 1 GB, see https://www.sqlite.org/limits.html
             # Therefore, this should be smaller. Another argument for making it smaller is that this blob size
@@ -2298,7 +2308,6 @@ class SQLiteIndexedTar(MountSource):
                     if self.printDebug >= 3:
                         traceback.print_exc()
 
-            # Store the offsets into a temporary file and then into the SQLite database
             if self.printDebug >= 2:
                 print("[Info] Could not load GZip Block offset data. Will create it from scratch.")
 

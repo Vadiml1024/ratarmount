@@ -18,7 +18,12 @@ import traceback
 import urllib.parse
 import zipfile
 from typing import Any, Callable, Dict, Iterable, IO, List, Optional, Tuple, Union
-import fuse
+
+try:
+    import fuse
+except ImportError:
+    import fusepy as fuse
+
 
 try:
     import rarfile
@@ -27,13 +32,14 @@ except ImportError:
 
 import ratarmountcore as core
 from ratarmountcore import (
-    SQLiteIndexedTar,
-    MountSource,
-    UnionMountSource,
     AutoMountLayer,
+    MountSource,
     FileVersionLayer,
-    openMountSource,
     FolderMountSource,
+    SQLiteIndexedTar,
+    UnionMountSource,
+    findModuleVersion,
+    openMountSource,
     overrides,
     supportedCompressions,
     stripSuffixFromTarFile,
@@ -47,6 +53,16 @@ __version__ = '0.12.0'
 
 def hasNonEmptySupport() -> bool:
     try:
+        # Check suffix of shared library
+        if (
+            'fuse' in sys.modules
+            and hasattr(fuse, '_libfuse_path')
+            and getattr(fuse, '_libfuse_path').endswith(".so.2")
+        ):
+            return True
+
+        # Note that in Ubuntu 22.04 libfuse3 and libfuse2 can be installed side-by-side with fusermount 3 being
+        # detected with precedence even though fusepy will use libfuse-2.9.9.
         with os.popen('fusermount -V') as pipe:
             match = re.search(r'([0-9]+)[.][0-9]+[.][0-9]+', pipe.read())
             if match:
@@ -878,23 +894,19 @@ class PrintVersionAction(argparse.Action):
         print("Compression Backends:")
         print()
 
-        for _, cinfo in supportedCompressions.items():
+        def printModuleVersion(moduleName: str):
             try:
-                importlib.import_module(cinfo.moduleName)
+                importlib.import_module(moduleName)
             except ImportError:
                 pass
 
-            if cinfo.moduleName in sys.modules:
-                module = sys.modules[cinfo.moduleName]
-                # zipfile has no __version__ attribute and PEP 396 ensuring that was rejected 2021-04-14
-                # in favor of 'version' from importlib.metadata which does not even work with zipfile.
-                # Probably, because zipfile is a built-in module whose version would be the Python version.
-                # https://www.python.org/dev/peps/pep-0396/
-                # The "python-xz" project is imported as an "xz" module, which complicates things because
-                # there is no generic way to get the "python-xz" name from the "xz" runtime module object
-                # and importlib.metadata.version will require "python-xz" as argument.
-                if hasattr(module, '__version__'):
-                    print(cinfo.moduleName, getattr(module, '__version__'))
+            if moduleName in sys.modules:
+                moduleVersion = findModuleVersion(sys.modules[moduleName])
+                if moduleVersion:
+                    print(moduleName, moduleVersion)
+
+        for _, cinfo in supportedCompressions.items():
+            printModuleVersion(cinfo.moduleName)
 
         sys.exit(0)
 
